@@ -1,176 +1,88 @@
 # TD8_To_RISCV_v2
 
-`TD8_To_RISCV_v1.1`を基準に，非パイプライン構成のままRV32I基本整数命令セットを全て実装したv2
+A non-pipelined RV32I processor in Verilog for the Digilent Basys 3. This version extends [v1.1](https://github.com/Gitratter/TD8_To_RISCV_v1.1) with the remaining base integer operations, jumps, byte and halfword accesses, and trap diagnostics.
 
-## 基準source
+The core executes one instruction per `cpu_enable` pulse. It uses a 32-bit datapath, 32 general-purpose registers, separate instruction and data memories, and little-endian data storage.
 
-- Repository: `Gitratter/TD8_To_RISCV_v1.1`
-- 基準commit: `27bebc9847ef0f8d192b80ecb6754cc1005dde61`
-- 取得日: 2026-09-04
-- 基準path: `sources_1/new`，`constrs_1/new`
+## Instruction set
 
-## v1からv1.1への改善の継承
-
-v1.1で行われた次の資源改善をv2でも維持しています。
-
-- DataMemoryを4個の64×8bit配列から1個の64×32bit配列へ統合
-- Register Fileのdata配列をresetせず，書込み済み状態を32bitのvalid maskで管理
-- Register Fileを2個の1-read LUTRAM copyとして構成し，2 source operandを読出し
-- 合成用topではRegister FileおよびDataMemoryのdebug readを無効化
-
-ユーザー提供の同一条件による配置配線結果では，v1からv1.1への変更によりLUTは1438個から702個へ約51.2%，FFは2649個から126個へ約95.2%減少し，LUTRAMは0個から76個へ増加しました。WNSは-4.936 nsから-4.262 ns，TNSは-13377.653 nsから-1069.005 nsへ改善しましたが，100 MHz制約は未達です。
-
-v2ではSBおよびSHを実装するため，単一の64×32bit DataMemory配列に4bitのbyte write strobeを追加しました。4個の独立した8bit配列には戻していません。ただし，v2でLUTRAM推論が維持されるかは新しいVivado synthesis／implementationで再確認が必要です。v1.1の数値をv2の結果として流用してはいけません。
-
-## 実装範囲
-
-RISC-V Unprivileged ISAのRV32I Base Integer Instruction Set Version 2.1に含まれる40命令を実装しています。
-
-| 分類 | 命令 |
+| Group | Instructions |
 |---|---|
 | Upper immediate | LUI, AUIPC |
 | Jump | JAL, JALR |
 | Branch | BEQ, BNE, BLT, BGE, BLTU, BGEU |
 | Load | LB, LH, LW, LBU, LHU |
 | Store | SB, SH, SW |
-| OP-IMM | ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI |
-| OP | ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND |
-| Memory ordering | FENCE |
-| Environment | ECALL, EBREAK |
+| Immediate ALU | ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI |
+| Register ALU | ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND |
+| Ordering and environment | FENCE, ECALL, EBREAK |
 
-FENCEは，single-hart，非パイプライン，cache／store bufferなしでmemory operationを発行順に完了する本構成ではNOPとして実装しています。ECALLおよびEBREAKはlegalなSYSTEM命令としてdecodeし，それぞれ異なるfatal trap causeを出力します。
+`FENCE` completes as a no-op in this single-hart system with ordered memory accesses and no cache or store buffer. `ECALL` and `EBREAK` halt execution with distinct trap causes. The core has no privileged CSRs, interrupts, trap handler, or optional ISA extensions. See [instruction behavior](docs/RV32I_COVERAGE.md) for encoding and execution details.
 
-次の機能はRV32I基本40命令には含まれないため，v2の対象外です。
+## Memory and reset
 
-- ZifenceiのFENCE.I
-- ZicsrのCSR命令
-- privileged architectureのCSR，trap vector，interruptおよびreturn命令
-- M，A，F，D，C，B，Vなどのoptional extension
-- cache，pipeline，VGA，PS/2およびgame logic
-
-したがって，v2は「RV32I基本整数命令40命令を実装したcore」であり，「全てのRISC-V extensionとprivileged systemを実装したCPU」ではありません。
-
-## microarchitecture
-
-- 32bit Program Counter，byte-addressed，`PC+4`
-- 32×32bit Register File，x0は常時0
-- I／S／B／U／J immediate
-- 32bit ALUとsigned／unsigned branch comparator
-- 非パイプライン，1回の`cpu_enable`で1命令を完了
-- Harvard構成
-- Instruction Memoryは標準64 word，parameterで変更可能
-- Data Memoryは256 byte，single 64×32bit distributed-memory array
-- little-endian
-- 100 MHz単一clockと1 Hz／10 Hz clock-enable
-- TD8互換のswitch，LED，7 segmentおよび`TD4_TOP` port
-
-## memory map
-
-| Address | access | 内容 |
+| Address space | Range | Function |
 |---|---|---|
-| `0x00000000`–`0x000000ff` | R/W | 256-byte Data RAM。LB/LH/LW/LBU/LHU/SB/SH/SWに対応 |
-| `0x00000100` | R | 8bit switchを0拡張した32bit input register。aligned LWのみ |
-| `0x00000104` | R/W | 8bit LED output/readback register。aligned LW/SWのみ |
-| その他 | ― | access fault |
+| Instruction | `0x00000000`–`0x000000ff` by default | 64-word ROM; capacity and initialization file are parameters |
+| Data | `0x00000000`–`0x000000ff` | 256-byte RAM; byte, halfword, and word accesses |
+| Data | `0x00000100` | Eight-bit switch input, aligned `LW` only |
+| Data | `0x00000104` | Eight-bit LED output/readback, aligned `LW` / `SW` only |
 
-RAMの自然alignmentは，byte accessが任意address，halfword accessが2-byte境界，word accessが4-byte境界です。misaligned accessは本実行環境ではfatal trapになります。
+Halfwords require two-byte alignment and words require four-byte alignment. Invalid accesses cause a trap. Data RAM retains its contents across CPU reset. Register-file reset clears validity bits, making `x1`–`x31` read as zero without resetting the RAM arrays; `x0` always reads as zero.
 
-Data RAM配列にはresetを与えていないため，CPU reset後も物理内容を保持します。Register Fileは配列をresetせずvalid maskをclearするので，reset後はx1–x31を論理的に0として読み出します。PC，output portおよび`clk_ind`はresetされます。
+Data RAM is a single `64 x 32-bit` array with four byte write enables. Two register-file arrays provide the source read ports. Both memories use distributed-RAM attributes, with debug reads disabled in the board top.
 
-## trap interface
+## Trap behavior
 
-`fault=1`は現在命令またはfetchに対するfatal synchronous trap要求です。trap中はPC，Register File，Data RAMおよびoutput portを更新しません。`debug_trap_cause`と`debug_trap_value`をsimulation/debug用に出力します。
+`fault` suppresses updates to the PC, registers, RAM, output port, and instruction indicator. It is a combinational indication of the current faulting instruction or fetch; holding the PC normally keeps it asserted until reset. `debug_trap_cause` and `debug_trap_value` expose the reason and associated value. They are debug ports, not CSRs.
 
-| cause | 意味 |
+| Cause | Condition |
 |---:|---|
-| 0 | instruction address misaligned |
-| 1 | instruction access fault |
-| 2 | illegal instruction |
-| 3 | breakpoint (EBREAK) |
-| 4 | load address misaligned |
-| 5 | load access fault |
-| 6 | store address misaligned |
-| 7 | store access fault |
-| 11 | environment call |
+| 0 / 1 | Instruction address misaligned / instruction access fault |
+| 2 | Illegal instruction |
+| 3 | EBREAK |
+| 4 / 5 | Load address misaligned / load access fault |
+| 6 / 7 | Store address misaligned / store access fault |
+| 11 | ECALL |
 
-cause番号は標準の同期exception番号に合わせていますが，これらはproject-local debug signalであり，`mcause` CSRではありません。v2はtrap vector，CSR保存およびtrap returnを実装せず，resetまでfaulting stateで停止します。
+A taken branch or jump to a misaligned target faults at the transfer instruction. An aligned target outside ROM is accepted by the transfer, then faults on the next fetch. A branch that is not taken does not check target alignment.
 
-JAL，JALRおよびtaken branchのtargetが4-byte境界でなければ，control-transfer命令自身でinstruction-address-misaligned trapを発生させ，link registerを含む副作用を抑止します。整列しているがInstruction Memory範囲外のtargetへはcontrol transferを完了し，次のfetchでinstruction access faultを発生させます。not-taken branchは未選択targetのmisalignmentを報告しません。
+## FPGA setup and demo
 
-## default FPGA demo
+Create a Vivado project for `xc7a35tcpg236-1`, add [sources_1/new](sources_1/new) as design sources and [TD8_RAM_TO_RISCV_V2.xdc](constrs_1/new/TD8_RAM_TO_RISCV_V2.xdc) as constraints, and set the top to `TD4_TOP`.
 
-既定ROMはv2で追加したXORI，SLLI，SB，LBUおよびJALを通る短いloopです。
+The board uses its 100 MHz clock with one or ten instruction-enable pulses per second, selected by `clksel`. The default ROM computes:
 
 ```text
-x3 = zero_extend(IO_IN)
-x3 = x3 XOR 0x5a
-x3 = x3 << 1
-RAM byte[1] = x3[7:0]
-x4 = zero_extend(RAM byte[1])
-IO_OUT = x4
-loop
+value = ((switch_input XOR 0x5a) << 1) AND 0xff
+RAM[1] = value
+LED_output = zero_extend(RAM[1])
 ```
 
-switch入力が`0x05`の場合，LED出力は`0xbe`となり，7 segmentには下位nibbleの`E`が表示されます。
+The loop exercises `XORI`, `SLLI`, `SB`, `LBU`, and `JAL`. Input `0x05` produces LED output `0xbe` and `E` on the rightmost seven-segment digit. An output update takes several instructions.
 
-## directory
+## Simulation and synthesis checks
 
-```text
-TD8_To_RISCV_v2/
-├─ sources_1/new/       synthesizable RTL
-├─ constrs_1/new/       Basys 3 XDC
-├─ sim_1/new/           self-checking testbenches
-├─ scripts/             simulation，Yosys synthesis，Vivado report helpers
-└─ docs/                migration and instruction coverage records
-```
-
-Vivadoのtop moduleは`TD4_TOP`です。
-
-## simulation
-
-Icarus VerilogがPATHにある場合は，PowerShellで次を実行します。
+From the repository root, with PowerShell and Icarus Verilog installed:
 
 ```powershell
-./scripts/run_tests.ps1
+pwsh -File scripts/run_tests.ps1
 ```
 
-portable Icarusを使用する場合は，実行fileとbackend directoryを指定できます。
+The runner executes 11 self-checking testbenches for decoding, arithmetic, control flow, memory, MMIO, traps, reset behavior, and the board demo. With Yosys available:
 
 ```powershell
-./scripts/run_tests.ps1 `
-  -Iverilog C:\path\to\iverilog.exe `
-  -Vvp C:\path\to\vvp.exe `
-  -IverilogBase C:\path\to\lib\ivl
+pwsh -File scripts/run_yosys_check.ps1
 ```
 
-全11 testbenchは自己検査型で，失敗時に非0で終了し，成功時に`PASS`を表示します。RV32I 40命令，strict decode，即値／演算／memoryの境界，MMIO／fault，v1.1のLUTRAM向けreset方式およびboard demoを検査します。実行済み結果は`VERIFICATION.md`を参照してください。
+See [verification procedures](VERIFICATION.md) for test coverage, tool options, and Vivado report generation. The report script runs after synthesis and implementation; it does not build the design. The 100 MHz input clock and slow instruction enable do not establish timing closure.
 
-## Yosys synthesis check
+## Further reading
 
-Yosys 0.68がPATHにある場合，Xilinx 7-series向けgeneric synthesisとLUTRAM primitive assertionを実行できます。
+- [Changes from v1.1](docs/MIGRATION_v1_1_to_v2.md)
+- [RV32I instruction behavior](docs/RV32I_COVERAGE.md)
+- [RISC-V RV32I specification, version 2.1](https://docs.riscv.org/reference/isa/v20260120/unpriv/rv32.html)
 
-```powershell
-./scripts/run_yosys_check.ps1
-```
+## License
 
-基準結果はDataMemoryが`RAM64X1S` 32個，Register Fileが`RAM32M` 12個，Block RAMが0個です。このprimitive構成はYosys用の回帰signatureであり，Vivadoの配置配線後資源値ではありません。
-
-## Vivadoで必ず再確認する項目
-
-v2のsourceとXDCを新しいprojectへ追加し，`TD4_TOP`をtopとしてsynthesisおよびimplementationを行います。`scripts/vivado_reports.tcl`はprojectのpart，top，v2 sourceおよび旧v1 source混在を検査した後，synthesis／implementation reportを出力する補助scriptです。
-
-特に次を確認してください。
-
-- DataMemoryが64×32bitのDISTRIBUTED RAMとして推論されたこと
-- Register Fileの2 bankが32×32bitのDISTRIBUTED RAMとして推論されたこと
-- DataMemory配下にRAM64系，Register File配下にRAM32系primitiveが存在すること
-- memory本体が大量のFDREへ戻っていないこと
-- synthesis topではdebug memory copyが存在しないこと
-- Block RAMが0であること
-- LUTRAM，LUT，FF，WNSおよびTNSのv1.1との差
-
-100 MHzのtiming closureはv2の命令追加だけでは保証されません。v1.1で残った長い組合せpathは非パイプラインv2にも残るため，最大動作周波数の改善はv3のpipeline化で扱います。
-
-## 参照仕様
-
-- RISC-V International, RV32I Base Integer Instruction Set, Version 2.1: <https://docs.riscv.org/reference/isa/v20260120/unpriv/rv32.html>
+[MIT](LICENSE).
